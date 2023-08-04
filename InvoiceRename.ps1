@@ -1,4 +1,4 @@
-$PathToMonitor = Get-Location
+$pathtomonitor = Get-Location
 $timeout = 1000
 
 try {
@@ -11,9 +11,18 @@ try {
         if ($change.TimedOut -eq $false) {
             if ($change.ChangeType -eq 'Created') {
                 Start-Sleep -Seconds 1
-                $fp = Join-Path $PathToMonitor $change.Name
-                $creationDate = (Get-Item $fp).CreationTime.ToString("yyyyMMdd")
-                Get-Item $fp | Rename-Item -NewName { $creationDate + " " + $_.Name }
+                $fp = Join-Path $pathtomonitor $change.Name
+                $creationDate = (Get-Item $fp).CreationTime
+                $fileDate = $creationDate.ToString("yyyyMMdd")
+                $folderDate = $creationDate.ToString("yyyyMM")
+                
+                $newPath = Join-Path $pathtomonitor $folderDate
+                if(-not(Test-Path -Path $newPath)) {
+                    New-Item -ItemType Directory -Path $newPath | Out-Null
+                }
+
+                Get-Item $fp | Rename-Item -NewName { $fileDate + " " + $_.Name } -PassThru |
+                Move-Item -Destination $newPath -Force
             }
         }
         else {
@@ -23,4 +32,5 @@ try {
 }
 finally {
     $FileSystemWatcher.Dispose()
+    Write-Host "My Watcher is done."
 }
