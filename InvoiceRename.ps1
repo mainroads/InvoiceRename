@@ -25,15 +25,24 @@ Write-Host "Current PowerShell Version: $($PSVersionTable.PSVersion)" -Foregroun
 Write-Host "Current User: $($env:USERNAME)" -ForegroundColor Green
 Write-Host "Script Start Time: $(Get-Date)" -ForegroundColor Green
 
+# Resolve the script root robustly (works even if $PSScriptRoot is not set)
+if ($PSScriptRoot) {
+    $scriptRoot = $PSScriptRoot
+} elseif ($MyInvocation.MyCommand.Path) {
+    $scriptRoot = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+} else {
+    $scriptRoot = (Get-Location).Path
+}
+
 # --- CONFIGURATION ---
 # Load settings from Settings.json file
-$settingsPath = Join-Path -Path $PSScriptRoot -ChildPath "Settings.json"
+$settingsPath = Join-Path -Path $scriptRoot -ChildPath "Settings.json"
 Write-Host "`n=== SETTINGS CONFIGURATION ===" -ForegroundColor Yellow
 Write-Host "Settings file path: '$settingsPath'" -ForegroundColor Green
 
 # Default settings
 $defaultSettings = @{
-    WatchFolderPath = $PSScriptRoot
+    WatchFolderPath = $scriptRoot
 }
 
 # Load or create settings file
@@ -64,13 +73,13 @@ if (Test-Path $settingsPath) {
 # Validate and set the watch folder path
 if ($settings.WatchFolderPath -and (Test-Path $settings.WatchFolderPath)) {
     $pathtomonitor = Get-Item $settings.WatchFolderPath
-    Write-Host "Using watch folder from settings: '$($pathtomonitor.Path)'" -ForegroundColor Green
+    Write-Host "Using watch folder from settings: '$($pathtomonitor.FullName)'" -ForegroundColor Green
 } else {
     Write-Host "WARNING: Watch folder path in settings is invalid or doesn't exist" -ForegroundColor Yellow
     Write-Host "Falling back to script directory..." -ForegroundColor Yellow
-    $pathtomonitor = Get-Item $PSScriptRoot
+    $pathtomonitor = Get-Item $scriptRoot
     # Update settings with the fallback path
-    $settings.WatchFolderPath = $PSScriptRoot
+    $settings.WatchFolderPath = $scriptRoot
     try {
         $settings | ConvertTo-Json -Depth 3 | Set-Content -Path $settingsPath -Encoding UTF8
         Write-Host "Settings file updated with fallback path" -ForegroundColor Green
@@ -81,7 +90,7 @@ if ($settings.WatchFolderPath -and (Test-Path $settings.WatchFolderPath)) {
 }
 
 Write-Host "`n=== PATH CONFIGURATION ===" -ForegroundColor Yellow
-Write-Host "Watch folder path: '$($pathtomonitor.Path)'" -ForegroundColor Green
+Write-Host "Watch folder path: '$($pathtomonitor.FullName)'" -ForegroundColor Green
 Write-Host "PSScriptRoot: '$PSScriptRoot'" -ForegroundColor Green
 
 # The script must be saved and run as a .ps1 file for the path detection to work.
@@ -93,7 +102,7 @@ if (-not $PSScriptRoot) {
 }
 
 # The script expects MsgReader.dll to be in the same folder as the script.
-$scriptPath = $PSScriptRoot
+$scriptPath = $scriptRoot
 $msgReaderDllPath = Join-Path -Path $scriptPath -ChildPath "MsgReader.dll"
 
 Write-Host "Script Path: '$scriptPath'" -ForegroundColor Green
@@ -102,7 +111,7 @@ Write-Host "MsgReader DLL Path: '$msgReaderDllPath'" -ForegroundColor Green
 # Use a global scope for the variable so it can be accessed inside the action block.
 $global:msgReaderLoaded = $false
 # Store the monitor path in global scope for reliable access in action block
-$global:monitorPath = $pathtomonitor.Path
+$global:monitorPath = $pathtomonitor.FullName
 
 # Attempt to load the MsgReader DLL if it exists
 Write-Host "`n=== MSG READER SETUP ===" -ForegroundColor Yellow
@@ -126,7 +135,7 @@ if (Test-Path $msgReaderDllPath) {
 # Test directory permissions
 Write-Host "`n=== DIRECTORY PERMISSIONS TEST ===" -ForegroundColor Yellow
 try {
-    $testFile = Join-Path -Path $pathtomonitor.Path -ChildPath "test_permissions.tmp"
+    $testFile = Join-Path -Path $pathtomonitor.FullName -ChildPath "test_permissions.tmp"
     "test" | Out-File -FilePath $testFile -Force
     Remove-Item -Path $testFile -Force
     Write-Host "Directory write permissions: OK" -ForegroundColor Green
@@ -134,7 +143,7 @@ try {
     Write-Host "Directory write permissions: FAILED - $_" -ForegroundColor Red
 }
 
-Write-Host "`nPreparing to monitor '$($pathtomonitor.Path)'..."
+Write-Host "`nPreparing to monitor '$($pathtomonitor.FullName)'..."
 
 # --- HELPER FUNCTIONS ---
 # Create functions in global scope so they can be accessed from the action script block
@@ -421,9 +430,11 @@ $action = {
         
         if ($emailDate) {
             $fileDate = $emailDate.ToString("yyyyMMdd")
-            $folderDate = $emailDate.ToString("yyyyMM")
+            $yearFolder = $emailDate.ToString("yyyy")
+            $monthFolder = $emailDate.ToString("yyyyMM")
             Write-Host "[$timestamp] File date string: '$fileDate'" -ForegroundColor Green
-            Write-Host "[$timestamp] Folder date string: '$folderDate'" -ForegroundColor Green
+            Write-Host "[$timestamp] Year folder: '$yearFolder'" -ForegroundColor Green
+            Write-Host "[$timestamp] Month folder: '$monthFolder'" -ForegroundColor Green
             
             # Use the global monitor path for reliability
             $monitorPath = $Global:monitorPath
@@ -435,23 +446,40 @@ $action = {
                 return
             }
             
-            # The destination folder is always created in the root of the monitored path.
-            $newPath = Join-Path -Path $monitorPath -ChildPath $folderDate
-            Write-Host "[$timestamp] Destination folder: '$newPath'" -ForegroundColor Green
+            # The destination folder structure is <root>\yyyy\yyyymm
+            $yearPath = Join-Path -Path $monitorPath -ChildPath $yearFolder
+            $newPath = Join-Path -Path $yearPath -ChildPath $monthFolder
+            Write-Host "[$timestamp] Destination year folder: '$yearPath'" -ForegroundColor Green
+            Write-Host "[$timestamp] Destination month folder: '$newPath'" -ForegroundColor Green
             
-            # If the destination folder doesn't exist, create it.
-            if (-not(Test-Path -Path $newPath)) {
+            # Ensure destination folders exist
+            if (-not(Test-Path -Path $yearPath)) {
                 try {
-                    Write-Host "[$timestamp] Creating directory: $newPath" -ForegroundColor Yellow
-                    New-Item -ItemType Directory -Path $newPath -Force | Out-Null
-                    Write-Host "[$timestamp] Directory created successfully" -ForegroundColor Green
+                    Write-Host "[$timestamp] Creating year directory: $yearPath" -ForegroundColor Yellow
+                    New-Item -ItemType Directory -Path $yearPath -Force | Out-Null
+                    Write-Host "[$timestamp] Year directory created" -ForegroundColor Green
                 } catch {
                     Write-Host "[$timestamp] ERROR creating directory: $_" -ForegroundColor Red
                     return
                 }
             } else {
-                Write-Host "[$timestamp] Destination directory already exists" -ForegroundColor Green
-            }            # Define the new name for the file (e.g., '20230422 MyDocument.pdf').
+                Write-Host "[$timestamp] Year directory already exists" -ForegroundColor Green
+            }
+
+            if (-not(Test-Path -Path $newPath)) {
+                try {
+                    Write-Host "[$timestamp] Creating month directory: $newPath" -ForegroundColor Yellow
+                    New-Item -ItemType Directory -Path $newPath -Force | Out-Null
+                    Write-Host "[$timestamp] Month directory created" -ForegroundColor Green
+                } catch {
+                    Write-Host "[$timestamp] ERROR creating directory: $_" -ForegroundColor Red
+                    return
+                }
+            } else {
+                Write-Host "[$timestamp] Month directory already exists" -ForegroundColor Green
+            }
+
+            # Define the new name for the file (e.g., '20230422 MyDocument.pdf').
             $safeName = Get-SafeFileName -FileName $fileItem.Name
             
             # Check if the filename already starts with a date in yyyyMMdd format
@@ -494,15 +522,15 @@ $action = {
 Write-Host "`n=== FILESYSTEM WATCHER SETUP ===" -ForegroundColor Yellow
 
 # Test if the path is valid
-if (-not (Test-Path -Path $pathtomonitor.Path)) {
-    Write-Host "ERROR: Monitor path does not exist: '$($pathtomonitor.Path)'" -ForegroundColor Red
+if (-not (Test-Path -Path $pathtomonitor.FullName)) {
+    Write-Host "ERROR: Monitor path does not exist: '$($pathtomonitor.FullName)'" -ForegroundColor Red
     Read-Host "Press Enter to exit..."
     return
 }
 
 # Set up the FileSystemWatcher object.
 try {
-    $FileSystemWatcher = New-Object System.IO.FileSystemWatcher $pathtomonitor.Path
+    $FileSystemWatcher = New-Object System.IO.FileSystemWatcher $pathtomonitor.FullName
     $FileSystemWatcher.IncludeSubdirectories = $true
     $FileSystemWatcher.NotifyFilter = [System.IO.NotifyFilters]::FileName -bor [System.IO.NotifyFilters]::CreationTime -bor [System.IO.NotifyFilters]::Size
     
@@ -529,12 +557,12 @@ try {
 # Show additional debug info
 Write-Host "`n=== MONITORING STATUS ===" -ForegroundColor Yellow
 Write-Host "Current directory contents:" -ForegroundColor Green
-Get-ChildItem -Path $pathtomonitor.Path | ForEach-Object {
+Get-ChildItem -Path $pathtomonitor.FullName | ForEach-Object {
     Write-Host "  $($_.Name) ($($_.GetType().Name))" -ForegroundColor Gray
 }
 
 Write-Host "`n=== READY FOR MONITORING ===" -ForegroundColor Cyan
-Write-Host "Monitoring path: '$($pathtomonitor.Path)'" -ForegroundColor Green
+Write-Host "Monitoring path: '$($pathtomonitor.FullName)'" -ForegroundColor Green
 Write-Host "Supported file types: .pdf, .eml, .msg" -ForegroundColor Green
 Write-Host "Current time: $(Get-Date)" -ForegroundColor Green
 Write-Host "`nTo test: Drag and drop a .eml file into the monitored folder" -ForegroundColor Yellow
